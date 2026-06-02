@@ -172,13 +172,38 @@ export default function App() {
   const fetchPayments = async () => {
     setIsLoadingPayments(true);
     try {
+      const directUrl = getStoredScriptUrl();
+      if (directUrl) {
+        const separator = directUrl.includes("?") ? "&" : "?";
+        const res = await fetch(`${directUrl}${separator}type=payments`);
+        if (res.ok) {
+          const payload = await res.json();
+          if (payload && payload.success && Array.isArray(payload.data)) {
+            setPayments(payload.data);
+            localStorage.setItem("local_payments", JSON.stringify(payload.data));
+            setIsLoadingPayments(false);
+            return;
+          }
+        }
+      }
+
       const res = await fetch("/api/payments");
       if (res.ok) {
         const payload = await res.json();
         setPayments(payload.data || []);
+        localStorage.setItem("local_payments", JSON.stringify(payload.data || []));
+      } else {
+        const cached = localStorage.getItem("local_payments");
+        if (cached) {
+          setPayments(JSON.parse(cached));
+        }
       }
     } catch (err) {
       console.error("Error fetching payments:", err);
+      const cached = localStorage.getItem("local_payments");
+      if (cached) {
+        setPayments(JSON.parse(cached));
+      }
     } finally {
       setIsLoadingPayments(false);
     }
@@ -225,6 +250,75 @@ export default function App() {
 
     setIsSubmittingPayment(true);
     try {
+      const directUrl = getStoredScriptUrl();
+      if (directUrl) {
+        try {
+          // 1. Upload the payment receipt image to Google Drive first
+          const uploadRes = await fetch(directUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "upload",
+              fileName: `BUKTI_BAYAR - ${paymentRegCode} - ${paymentName}.${paymentFileName.split(".").pop() || "jpg"}`,
+              base64Data: paymentBase64,
+              mimeType: paymentMimeType
+            })
+          });
+
+          if (uploadRes.ok) {
+            const uploadReply = await uploadRes.json();
+            if (uploadReply && uploadReply.url) {
+              const pId = "PAY-" + Math.floor(100000 + Math.random() * 900000);
+              const pDate = new Date().toLocaleDateString("id-ID", {
+                year: "numeric",
+                month: "short",
+                day: "numeric"
+              });
+
+              const payPayload = {
+                id: pId,
+                registrationCode: paymentRegCode,
+                studentName: paymentName,
+                description: finalDescription,
+                date: pDate,
+                fileUrl: uploadReply.url,
+                status: "Lunas" // Default to instant Lunas (No validation block needed of verification)
+              };
+
+              // 2. Insert payment row in Google Sheets
+              const payRes = await fetch(directUrl, {
+                method: "POST",
+                headers: { "Content-Type": "text/plain" },
+                body: JSON.stringify({
+                  action: "submitPayment",
+                  data: payPayload
+                })
+              });
+
+              if (payRes.ok) {
+                setPaymentSuccessData(payPayload);
+                // Clear payment form fields
+                setPaymentRegCode("");
+                setPaymentName("");
+                setPaymentSelectOption("Uang Kesiswaan / Pendaftaran Awal");
+                setPaymentCustomNotes("");
+                setPaymentFile(null);
+                setPaymentFileName("");
+                setPaymentBase64("");
+                setPaymentMimeType("");
+                setPaymentPreviewUrl(null);
+                // Reload
+                fetchPayments();
+                setIsSubmittingPayment(false);
+                return;
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Direct Apps Script payment submit failing, trying server fallback:", err);
+        }
+      }
+
       const res = await fetch("/api/payments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -292,19 +386,60 @@ export default function App() {
   const fetchRegistrations = async () => {
     setIsLoadingRegs(true);
     try {
+      const directUrl = getStoredScriptUrl();
+      if (directUrl) {
+        const separator = directUrl.includes("?") ? "&" : "?";
+        const res = await fetch(`${directUrl}${separator}type=registrations`);
+        if (res.ok) {
+          const payload = await res.json();
+          if (payload && payload.success && Array.isArray(payload.data)) {
+            setRegistrations(payload.data);
+            localStorage.setItem("local_registrations", JSON.stringify(payload.data));
+            setIsLoadingRegs(false);
+            return;
+          }
+        }
+      }
+
+      // Backend / Local fallbacks
       const res = await fetch("/api/registrations");
       if (res.ok) {
         const payload = await res.json();
         setRegistrations(payload.data || []);
+        localStorage.setItem("local_registrations", JSON.stringify(payload.data || []));
+      } else {
+        const cached = localStorage.getItem("local_registrations");
+        if (cached) {
+          setRegistrations(JSON.parse(cached));
+        }
       }
     } catch (err) {
       console.error("Failed to fetch registrations:", err);
+      const cached = localStorage.getItem("local_registrations");
+      if (cached) {
+        setRegistrations(JSON.parse(cached));
+      }
     } finally {
       setIsLoadingRegs(false);
     }
   };
 
   const fetchSyncStatus = async () => {
+    const directUrl = getStoredScriptUrl();
+    const spreadsheetId = localStorage.getItem("google_spreadsheet_id") || spreadsheetIdInSettings;
+    const driveFolderId = localStorage.getItem("google_drive_folder_id") || driveFolderIdInSettings;
+
+    if (directUrl) {
+      setSyncStatus({
+        sheetConnected: !!spreadsheetId,
+        driveConnected: !!driveFolderId,
+        spreadsheetId: spreadsheetId || null,
+        driveFolderId: driveFolderId || null,
+        errorMessage: null
+      });
+      return;
+    }
+
     try {
       const res = await fetch("/api/sync/status");
       if (res.ok) {
@@ -317,21 +452,34 @@ export default function App() {
   };
 
   const fetchConfig = async () => {
-    try {
-      const res = await fetch("/api/config");
-      if (res.ok) {
-        const payload = await res.json();
-        setSpreadsheetIdInSettings(payload.googleSpreadsheetId || "");
-        setDriveFolderIdInSettings(payload.googleDriveFolderId || "");
-        setScriptUrlInSettings(payload.googleScriptUrl || "");
-      }
-    } catch (err) {
-      console.error("Failed to fetch integration config from server:", err);
+    // 1. Check local storage first
+    let localSId = localStorage.getItem("google_spreadsheet_id") || "";
+    let localFoldId = localStorage.getItem("google_drive_folder_id") || "";
+    let localScrUrl = localStorage.getItem("google_script_url") || "";
+
+    // If local storage is not yet initialized, set defaults to the user's active configurations
+    if (!localScrUrl) {
+      localScrUrl = "https://script.google.com/macros/s/AKfycby-sEpy7rYq9tjuqMo_QjDvwmPUKiwiqwSEvqyFCr-tOBfymGiUuAbhk-6o6UR9ENNSyg/exec";
+      localSId = "1DSVqDAaMGSMhTmOvIk-qme_wPeFZ27LoftcVvYwj6iU";
+      localFoldId = "1fcgrKLvJV7_NIa5FEIRcxUA0V5y4UrRd";
+
+      localStorage.setItem("google_script_url", localScrUrl);
+      localStorage.setItem("google_spreadsheet_id", localSId);
+      localStorage.setItem("google_drive_folder_id", localFoldId);
     }
+
+    setSpreadsheetIdInSettings(localSId);
+    setDriveFolderIdInSettings(localFoldId);
+    setScriptUrlInSettings(localScrUrl);
   };
 
   const handleSaveConfig = async () => {
     setIsSavingConfig(true);
+    // Write locally first
+    localStorage.setItem("google_spreadsheet_id", spreadsheetIdInSettings);
+    localStorage.setItem("google_drive_folder_id", driveFolderIdInSettings);
+    localStorage.setItem("google_script_url", scriptUrlInSettings);
+
     try {
       const res = await fetch("/api/config", {
         method: "POST",
@@ -346,12 +494,19 @@ export default function App() {
         alert("Konfigurasi integrasi Google berhasil disimpan!");
         fetchSyncStatus();
         fetchRegistrations();
+        fetchPayments();
       } else {
-        alert("Gagal menyimpan konfigurasi.");
+        alert("Konfigurasi berhasil disimpan langsung di browser Anda (Serverless/GitHub Pages mode)!");
+        fetchSyncStatus();
+        fetchRegistrations();
+        fetchPayments();
       }
     } catch (err) {
-      console.error("Failed to save config:", err);
-      alert("Terjadi kesalahan koneksi server.");
+      console.error("Failed to save config on server, but keeping in local storage:", err);
+      alert("Konfigurasi berhasil disimpan langsung di browser Anda (Serverless/GitHub Pages mode)!");
+      fetchSyncStatus();
+      fetchRegistrations();
+      fetchPayments();
     } finally {
       setIsSavingConfig(false);
     }
@@ -359,6 +514,29 @@ export default function App() {
 
   const handleInitializeDatabase = async () => {
     setIsInitializingDatabase(true);
+    const directUrl = getStoredScriptUrl();
+
+    if (directUrl) {
+      try {
+        const res = await fetch(directUrl, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify({ action: "setup" })
+        });
+        if (res.ok) {
+          const payload = await res.json();
+          alert(payload.message || "Database Spreadsheet berhasil diinisialisasi otomatis via Google Apps Script!");
+          fetchSyncStatus();
+          fetchRegistrations();
+          fetchPayments();
+          setIsInitializingDatabase(false);
+          return;
+        }
+      } catch (err) {
+        console.error("Direct setup failing, trying server fallback:", err);
+      }
+    }
+
     try {
       const res = await fetch("/api/setup", {
         method: "POST"
@@ -368,6 +546,7 @@ export default function App() {
         alert(payload.message || "Database Spreadsheet berhasil diinisialisasi secara otomatis!");
         fetchSyncStatus();
         fetchRegistrations();
+        fetchPayments();
       } else {
         const errorData = await res.json();
         alert(errorData.error || "Gagal menginisialisasi database.");
@@ -388,6 +567,22 @@ export default function App() {
       reader.onload = () => resolve(reader.result as string);
       reader.onerror = (error) => reject(error);
     });
+  };
+
+  // Get Google Apps Script Web App URL safely from memory, localStorage, or environment
+  const getStoredScriptUrl = (): string => {
+    if (scriptUrlInSettings && scriptUrlInSettings.startsWith("https://script.google.com")) {
+      return scriptUrlInSettings.trim();
+    }
+    const cached = localStorage.getItem("google_script_url");
+    if (cached && cached.startsWith("https://script.google.com")) {
+      return cached.trim();
+    }
+    const envUrl = ((import.meta as any).env?.VITE_GOOGLE_SCRIPT_URL as string) || "";
+    if (envUrl && envUrl.startsWith("https://script.google.com")) {
+      return envUrl.trim();
+    }
+    return "https://script.google.com/macros/s/AKfycby-sEpy7rYq9tjuqMo_QjDvwmPUKiwiqwSEvqyFCr-tOBfymGiUuAbhk-6o6UR9ENNSyg/exec";
   };
 
   // Document upload handler
@@ -417,6 +612,36 @@ export default function App() {
     setUploadingDocs(prev => ({ ...prev, [docKey]: true }));
     try {
       const base64Str = await fileToBase64(file);
+      const directUrl = getStoredScriptUrl();
+
+      if (directUrl) {
+        try {
+          const res = await fetch(directUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "upload",
+              fileName: `${postFormId || "NEW"} - ${biodataForm.namaLengkap || "Siswa"} - ${docKey.toUpperCase()}.${file.name.split('.').pop() || 'dat'}`,
+              base64Data: base64Str,
+              mimeType: file.type,
+              registrationCode: postFormId,
+              studentName: biodataForm.namaLengkap,
+              docType: docKey
+            })
+          });
+          if (res.ok) {
+            const reply = await res.json();
+            if (reply && reply.url) {
+              setDocumentsForm(prev => ({ ...prev, [docKey]: reply.url }));
+              setUploadingDocs(prev => ({ ...prev, [docKey]: false }));
+              return;
+            }
+          }
+        } catch (err) {
+          console.error("Direct document upload to Apps Script failing, trying server fallback:", err);
+        }
+      }
+
       const res = await fetch("/api/registrations/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -540,6 +765,28 @@ export default function App() {
     };
 
     try {
+      const directUrl = getStoredScriptUrl();
+      if (directUrl) {
+        try {
+          const res = await fetch(directUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "register",
+              data: bodyPayload
+            })
+          });
+          if (res.ok) {
+            setPostFormId(generatedId);
+            fetchRegistrations(); // Sync
+            setIsSubmitting(false);
+            return;
+          }
+        } catch (err) {
+          console.error("Direct Apps Script registration failing, using server fallback:", err);
+        }
+      }
+
       const res = await fetch("/api/registrations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -605,6 +852,31 @@ export default function App() {
     if (!confirmation) return;
 
     try {
+      const directUrl = getStoredScriptUrl();
+      if (directUrl) {
+        try {
+          const res = await fetch(directUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "updateStatus",
+              id: studentId,
+              status: value
+            })
+          });
+          if (res.ok) {
+            // Update direct local state to preserve visual fluidity
+            setRegistrations(prev => prev.map(r => r.id === studentId ? { ...r, status: value } : r));
+            if (selectedStudent && selectedStudent.id === studentId) {
+              setSelectedStudent(prev => prev ? { ...prev, status: value } : null);
+            }
+            return;
+          }
+        } catch (err) {
+          console.error("Direct status update failing, trying server fallback:", err);
+        }
+      }
+
       const res = await fetch(`/api/registrations/${studentId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -633,6 +905,55 @@ export default function App() {
     setIsAdminUploading(prev => ({ ...prev, [docKey]: true }));
     try {
       const base64Str = await fileToBase64(file);
+      const directUrl = getStoredScriptUrl();
+
+      if (directUrl) {
+        try {
+          // 1. Upload to Apps Script
+          const res = await fetch(directUrl, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "upload",
+              fileName: `${studentId} - ${selectedStudent?.biodata.namaLengkap || "Siswa"} - ${docKey.toUpperCase()}.${file.name.split('.').pop() || 'dat'}`,
+              base64Data: base64Str,
+              mimeType: file.type,
+              registrationCode: studentId,
+              studentName: selectedStudent?.biodata.namaLengkap || "Siswa",
+              docType: docKey
+            })
+          });
+
+          if (res.ok) {
+            const reply = await res.json();
+            if (reply && reply.url) {
+              const currentDocs = { ...(selectedStudent?.documents || { kk: "", ijazah: "", akta: "", photo: "" }) };
+              (currentDocs as any)[docKey] = reply.url;
+
+              // 2. Put back updated student document mapping
+              const patchRes = await fetch(directUrl, {
+                method: "POST",
+                headers: { "Content-Type": "text/plain" },
+                body: JSON.stringify({
+                  action: "updateStudent",
+                  id: studentId,
+                  data: { documents: currentDocs }
+                })
+              });
+
+              if (patchRes.ok) {
+                setRegistrations(prev => prev.map(r => r.id === studentId ? { ...r, documents: currentDocs } : r));
+                setSelectedStudent(prev => prev ? { ...prev, documents: currentDocs } : null);
+                setIsAdminUploading(prev => ({ ...prev, [docKey]: false }));
+                return;
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Direct admin upload doc to Apps Script failing, trying server fallback:", err);
+        }
+      }
+
       const res = await fetch("/api/registrations/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
