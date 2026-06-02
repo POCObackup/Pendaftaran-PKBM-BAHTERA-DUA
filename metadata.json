@@ -1,0 +1,6 @@
+{
+  "name": "PKBM Bahtera Dua",
+  "description": "Sistem Pendaftaran Siswa PKBM Bahtera Dua berbasis Google Sheets dan Google Drive",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
