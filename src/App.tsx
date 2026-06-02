@@ -174,16 +174,20 @@ export default function App() {
     try {
       const directUrl = getStoredScriptUrl();
       if (directUrl) {
-        const separator = directUrl.includes("?") ? "&" : "?";
-        const res = await fetch(`${directUrl}${separator}type=payments`);
-        if (res.ok) {
-          const payload = await res.json();
-          if (payload && payload.success && Array.isArray(payload.data)) {
-            setPayments(payload.data);
-            localStorage.setItem("local_payments", JSON.stringify(payload.data));
-            setIsLoadingPayments(false);
-            return;
+        try {
+          const separator = directUrl.includes("?") ? "&" : "?";
+          const res = await fetch(`${directUrl}${separator}type=payments`);
+          if (res.ok) {
+            const payload = await res.json();
+            if (payload && payload.success && Array.isArray(payload.data)) {
+              setPayments(payload.data);
+              localStorage.setItem("local_payments", JSON.stringify(payload.data));
+              setIsLoadingPayments(false);
+              return;
+            }
           }
+        } catch (directErr) {
+          console.warn("Direct Apps Script fetch of payments failed (CORS/network), falling back to backend:", directErr);
         }
       }
 
@@ -388,16 +392,20 @@ export default function App() {
     try {
       const directUrl = getStoredScriptUrl();
       if (directUrl) {
-        const separator = directUrl.includes("?") ? "&" : "?";
-        const res = await fetch(`${directUrl}${separator}type=registrations`);
-        if (res.ok) {
-          const payload = await res.json();
-          if (payload && payload.success && Array.isArray(payload.data)) {
-            setRegistrations(payload.data);
-            localStorage.setItem("local_registrations", JSON.stringify(payload.data));
-            setIsLoadingRegs(false);
-            return;
+        try {
+          const separator = directUrl.includes("?") ? "&" : "?";
+          const res = await fetch(`${directUrl}${separator}type=registrations`);
+          if (res.ok) {
+            const payload = await res.json();
+            if (payload && payload.success && Array.isArray(payload.data)) {
+              setRegistrations(payload.data);
+              localStorage.setItem("local_registrations", JSON.stringify(payload.data));
+              setIsLoadingRegs(false);
+              return;
+            }
           }
+        } catch (directErr) {
+          console.warn("Direct Apps Script fetch of registrations failed (CORS/network), falling back to backend:", directErr);
         }
       }
 
@@ -457,9 +465,11 @@ export default function App() {
     let localFoldId = localStorage.getItem("google_drive_folder_id") || "";
     let localScrUrl = localStorage.getItem("google_script_url") || "";
 
-    // If local storage is not yet initialized, set defaults to the user's active configurations
-    if (!localScrUrl) {
-      localScrUrl = "https://script.google.com/macros/s/AKfycby-sEpy7rYq9tjuqMo_QjDvwmPUKiwiqwSEvqyFCr-tOBfymGiUuAbhk-6o6UR9ENNSyg/exec";
+    const defaultUrl = "https://script.google.com/macros/s/AKfycbzBDHe0AQs0b-UiMhakTO7xv1q9F25kBzstyezkxt-arWzUJG-Moo6iVDlgyKWjnZiB/exec";
+
+    // If local storage is not yet initialized or points to the old script, update to the user's active deployment script
+    if (!localScrUrl || localScrUrl === "https://script.google.com/macros/s/AKfycby-sEpy7rYq9tjuqMo_QjDvwmPUKiwiqwSEvqyFCr-tOBfymGiUuAbhk-6o6UR9ENNSyg/exec") {
+      localScrUrl = defaultUrl;
       localSId = "1DSVqDAaMGSMhTmOvIk-qme_wPeFZ27LoftcVvYwj6iU";
       localFoldId = "1fcgrKLvJV7_NIa5FEIRcxUA0V5y4UrRd";
 
@@ -575,14 +585,14 @@ export default function App() {
       return scriptUrlInSettings.trim();
     }
     const cached = localStorage.getItem("google_script_url");
-    if (cached && cached.startsWith("https://script.google.com")) {
+    if (cached && cached.startsWith("https://script.google.com") && cached !== "https://script.google.com/macros/s/AKfycby-sEpy7rYq9tjuqMo_QjDvwmPUKiwiqwSEvqyFCr-tOBfymGiUuAbhk-6o6UR9ENNSyg/exec") {
       return cached.trim();
     }
     const envUrl = ((import.meta as any).env?.VITE_GOOGLE_SCRIPT_URL as string) || "";
     if (envUrl && envUrl.startsWith("https://script.google.com")) {
       return envUrl.trim();
     }
-    return "https://script.google.com/macros/s/AKfycby-sEpy7rYq9tjuqMo_QjDvwmPUKiwiqwSEvqyFCr-tOBfymGiUuAbhk-6o6UR9ENNSyg/exec";
+    return "https://script.google.com/macros/s/AKfycbzBDHe0AQs0b-UiMhakTO7xv1q9F25kBzstyezkxt-arWzUJG-Moo6iVDlgyKWjnZiB/exec";
   };
 
   // Document upload handler
@@ -2430,7 +2440,7 @@ export default function App() {
                 <div className="space-y-1.5">
                   <div className="flex justify-between items-center">
                     <label className="text-xs font-semibold text-slate-500">Password</label>
-                    <a href="#" onClick={(e) => { e.preventDefault(); alert("Silakan gunakan kunci admin default: '123Qwe,./' untuk kemudahan penilaian."); }} className="text-xs font-medium text-secondary hover:underline">Forgot password?</a>
+                    <a href="#" onClick={(e) => { e.preventDefault(); alert("Silakan hubungi administrator sistem untuk mereset kata sandi Anda."); }} className="text-xs font-medium text-secondary hover:underline">Forgot password?</a>
                   </div>
                   <div className="relative group">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400 group-focus-within:text-secondary transition-colors">
@@ -2452,7 +2462,6 @@ export default function App() {
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
-                  <div className="text-[10px] text-slate-400 font-medium">Default password: <code className="bg-slate-100 px-1 py-0.5 rounded text-primary-container">123Qwe,./</code></div>
                 </div>
 
                 {/* Remember Me */}
